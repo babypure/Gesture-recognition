@@ -1,0 +1,39 @@
+import os
+import h5py
+import numpy as np
+import scipy.io as sio
+
+inputFolder = r"../1st/"
+outputFolder = os.path.join(inputFolder, "1st")
+
+if not os.path.exists(outputFolder):
+    os.makedirs(outputFolder)
+for fileName in os.listdir(inputFolder):
+    if fileName.endswith(".mat"):
+        matFilePath = os.path.join(inputFolder, fileName)
+        print(f"Processing: {matFilePath}")
+        with h5py.File(matFilePath, 'r') as f:
+            RcvData = f['RcvData']
+            ref_0_0 = RcvData[0, 0]
+            dataset_0_0 = f[ref_0_0]
+            data_np = dataset_0_0[()]
+            data_np = np.transpose(data_np, (2,1,0))
+
+        # shape = (26624,16,3000)
+        signal_0 = data_np[:, :16, :].astype(float)
+
+        signal = np.zeros((1024, 16, 1000), dtype=float)
+        signal_0_length = signal_0.shape[0]
+        
+        for j in range(signal_0.shape[1]):
+            for k in range(signal_0.shape[2]):
+                start = min(1664*j + 80, signal_0_length - 1024)  # index not exceed
+                end   = start + 1024
+                signal[:, j, k] = signal_0[start:end, j, k]
+
+        baseName, _ = os.path.splitext(fileName)
+        newFileName = baseName + ".mat"
+        outputPath = os.path.join(outputFolder, newFileName)
+
+        sio.savemat(outputPath, {'signal': signal})     
+        print(f"Saved processed data to: {outputPath}")
