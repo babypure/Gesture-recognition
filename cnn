@@ -1,0 +1,240 @@
+import os
+import numpy as np
+import scipy.io
+from sklearn.preprocessing import MinMaxScaler
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Conv1D, Flatten, Dense, Dropout
+from tensorflow.keras.callbacks import CSVLogger, EarlyStopping
+from tensorflow.keras.optimizers import Adam
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import gc
+
+data_folder = r'../0408/'
+
+X_all = []
+y_all = []
+file_list = [f for f in os.listdir(data_folder) if f.endswith('.mat')]
+file_list.sort()
+
+labels = [os.path.splitext(f)[0] for f in file_list]
+unique_labels = sorted(set(labels))
+label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
+print("Label mapping:", label_to_index)
+
+index_to_label = {v: k for k, v in label_to_index.items()}
+
+for f in file_list:
+    label_name = os.path.splitext(f)[0]
+    label_idx = label_to_index[label_name]
+    mat_data = scipy.io.loadmat(os.path.join(data_folder, f))['signal']
+    num_frames = min(24000, mat_data.shape[-1])
+    for j in range(num_frames):
+        X_all.append(mat_data[:, :, j])
+        y_all.append(label_idx)
+
+X_all = np.array(X_all)
+y_all = np.array(y_all)
+
+def get_train_test_indices(label_indices, test_group=None):
+
+    n = len(label_indices)
+    if n < 1000:
+        split_idx = int(0.9 * n)
+        return label_indices[:split_idx], label_indices[split_idx:]
+    else:
+        n_groups = n // 1000  
+        if test_group is None:
+
+            return label_indices[:-1000], label_indices[-1000:]
+        else:
+            if test_group > n_groups - 2:
+                raise ValueError("for other，test_group smaller n_groups-2")
+            start = test_group * 1000
+            end = (test_group + 1) * 1000
+            train_idx = np.concatenate((label_indices[:start], label_indices[end:]))
+            return train_idx, label_indices[start:end]
+
+n_groups_list = []
+
+unique_numeric_labels = np.unique(y_all)
+for label in unique_numeric_labels:
+    label_indices = np.where(y_all == label)[0]
+    if len(label_indices) >= 1000:
+        n_groups_list.append(len(label_indices) // 1000)
+common_n_groups = min(n_groups_list) if n_groups_list else 0
+
+print("\n--- Baseline (last 1000) ---")
+X_train_list, y_train_list, X_test_list, y_test_list = [], [], [], []
+
+for label in unique_numeric_labels:
+    label_indices = np.where(y_all == label)[0]
+    if len(label_indices) < 1000:
+        split_idx = int(0.9 * len(label_indices))
+        train_idx = label_indices[:split_idx]
+        test_idx = label_indices[split_idx:]
+    else:
+        train_idx, test_idx = get_train_test_indices(label_indices, test_group=None)
+    X_train_list.extend(X_all[train_idx])
+    y_train_list.extend(y_all[train_idx])
+    X_test_list.extend(X_all[test_idx])
+    y_test_list.extend(y_all[test_idx])
+
+X_train = np.array(X_train_list)
+y_train = np.array(y_train_list)
+X_test = np.array(X_test_list)
+y_test = np.array(y_test_list)
+
+
+scaler = MinMaxScaler()
+X_train_scaled = scaler.fit_transform(X_train.reshape(X_train.shape[0], -1)).reshape(X_train.shape)
+X_test_scaled = scaler.transform(X_test.reshape(X_test.shape[0], -1)).reshape(X_test.shape)
+
+train_perm = np.random.permutation(X_train_scaled.shape[0])
+test_perm = np.random.permutation(X_test_scaled.shape[0])
+X_train_scaled = X_train_scaled[train_perm]
+y_train = y_train[train_perm]
+X_test_scaled = X_test_scaled[test_perm]
+y_test = y_test[test_perm]
+
+def build_model(input_shape, n_classes):
+    model = Sequential()
+    model.add(Conv1D(filters=16, kernel_size=3, padding='same', activation='relu', input_shape=input_shape))
+    model.add(Conv1D(filters=16, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=32, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=32, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=64, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=64, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=128, kernel_size=3, padding='same', activation='relu'))
+    model.add(Conv1D(filters=128, kernel_size=3, padding='same', activation='relu'))
+    model.add(Flatten())
+    model.add(Dropout(0.5))
+    model.add(Dense(64, activation='relu'))
+    model.add(Dense(32, activation='relu'))
+    model.add(Dense(n_classes, activation='softmax'))
+    return model
+
+input_shape = (X_train_scaled.shape[1], X_train_scaled.shape[2])
+n_classes = len(unique_numeric_labels)
+learning_rate = 0.0001
+optimizer = Adam(learning_rate=learning_rate)
+
+baseline_model = build_model(input_shape, n_classes)
+baseline_model.compile(optimizer=optimizer,
+                         loss='sparse_categorical_crossentropy',
+                         metrics=['accuracy'])
+
+csv_logger = CSVLogger(r'../0408test_baseline.csv')
+early_stopping = EarlyStopping(monitor='loss', patience=10, restore_best_weights=True)
+
+history = baseline_model.fit(X_train_scaled, y_train,
+                             epochs=200,
+                             batch_size=32,
+                             validation_split=0.1,
+                             callbacks=[csv_logger, early_stopping],
+                             verbose=1)
+
+y_pred = np.argmax(baseline_model.predict(X_test_scaled), axis=-1)
+acc = accuracy_score(y_test, y_pred)
+report = classification_report(y_test, y_pred)
+print("Baseline Accuracy (1D CNN):", acc)
+print("\nBaseline Classification Report (1D CNN):\n", report)
+
+cm = confusion_matrix(y_test, y_pred)
+plt.figure(figsize=(10, 8))
+
+tick_labels = [index_to_label[i] for i in unique_numeric_labels]
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=tick_labels, yticklabels=tick_labels)
+plt.ylabel('Actual Label')
+plt.xlabel('Predicted Label')
+plt.title('Confusion Matrix (Baseline 1D CNN)')
+plt.xticks(rotation=45)
+plt.yticks(rotation=0)
+plt.tight_layout()
+plt.show()
+
+tf.keras.backend.clear_session()
+gc.collect()
+
+if common_n_groups >= 2:
+    experiments_results = {}
+
+    for tg in reversed(range(common_n_groups - 1)):
+        print("\n--- test (window = frame %d to %d) ---" % (tg*1000, (tg+1)*1000))
+        X_train_list, y_train_list, X_test_list, y_test_list = [], [], [], []
+        
+        for label in unique_numeric_labels:
+            label_indices = np.where(y_all == label)[0]
+            if len(label_indices) < 1000:
+                split_idx = int(0.9 * len(label_indices))
+                train_idx = label_indices[:split_idx]
+                test_idx = label_indices[split_idx:]
+            else:
+                try:
+                    train_idx, test_idx = get_train_test_indices(label_indices, test_group=tg)
+                except ValueError:
+                    train_idx, test_idx = get_train_test_indices(label_indices, test_group=None)
+            X_train_list.extend(X_all[train_idx])
+            y_train_list.extend(y_all[train_idx])
+            X_test_list.extend(X_all[test_idx])
+            y_test_list.extend(y_all[test_idx])
+        
+        X_train = np.array(X_train_list)
+        y_train = np.array(y_train_list)
+        X_test = np.array(X_test_list)
+        y_test = np.array(y_test_list)
+        
+        scaler = MinMaxScaler()
+        X_train_scaled = scaler.fit_transform(X_train.reshape(X_train.shape[0], -1)).reshape(X_train.shape)
+        X_test_scaled = scaler.transform(X_test.reshape(X_test.shape[0], -1)).reshape(X_test.shape)
+        train_perm = np.random.permutation(X_train_scaled.shape[0])
+        test_perm = np.random.permutation(X_test_scaled.shape[0])
+        X_train_scaled = X_train_scaled[train_perm]
+        y_train = y_train[train_perm]
+        X_test_scaled = X_test_scaled[test_perm]
+        y_test = y_test[test_perm]
+        
+        
+        model = build_model((X_train_scaled.shape[1], X_train_scaled.shape[2]), n_classes)
+        model.compile(optimizer=optimizer,
+                      loss='sparse_categorical_crossentropy',
+                      metrics=['accuracy'])
+        csv_logger = CSVLogger(r'C:/XC_data/gestures/0408test_exp_tg%d.csv' % tg)
+        early_stopping = EarlyStopping(monitor='loss', patience=5, restore_best_weights=True)
+        
+        history = model.fit(X_train_scaled, y_train,
+                            epochs=200,
+                            batch_size=32,
+                            validation_split=0.1,
+                            callbacks=[csv_logger, early_stopping],
+                            verbose=1)
+        
+        y_pred = np.argmax(model.predict(X_test_scaled), axis=-1)
+        acc = accuracy_score(y_test, y_pred)
+        report = classification_report(y_test, y_pred)
+        print("test (window %d to %d) Accuracy: %.4f" % (tg*1000, (tg+1)*1000, acc))
+        print("Classification Report:\n", report)
+        experiments_results['exp_%d_to_%d' % (tg*1000, (tg+1)*1000)] = {'accuracy': acc, 'report': report}
+        
+        cm = confusion_matrix(y_test, y_pred)
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=tick_labels, yticklabels=tick_labels)
+        plt.ylabel('Actual Label')
+        plt.xlabel('Predicted Label')
+        plt.title('Confusion Matrix (window: %d to %d)' % (tg*1000, (tg+1)*1000))
+        plt.xticks(rotation=45)
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        plt.show()
+        
+        tf.keras.backend.clear_session()
+        gc.collect()
+    
+    print("\n=== all result ===")
+    for key, val in experiments_results.items():
+        print("test:", key)
+        print("Accuracy:", val['accuracy'])
+        print("Classification Report:\n", val['report'])
+        print("---------------------------------------------------")
