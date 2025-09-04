@@ -1,0 +1,97 @@
+import os
+import glob
+import numpy as np
+import scipy.io as sio
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.metrics import accuracy_score
+
+def load_mat_files(folder_path):
+
+    file_paths = sorted(glob.glob(os.path.join(folder_path, '*.mat')))
+    all_data = []
+    all_labels = []
+    
+    for fp in file_paths:
+        data_dict = sio.loadmat(fp)
+        data_3d = data_dict['signal']
+        data_3d = np.transpose(data_3d, (2, 0, 1))
+        n_frames = data_3d.shape[0]
+        data_2d = data_3d.reshape(n_frames, -1)
+
+        base_name = os.path.basename(fp)
+        file_label = os.path.splitext(base_name)[0]
+
+        labels_for_this_file = np.array([file_label] * n_frames)
+        all_data.append(data_2d)
+        all_labels.append(labels_for_this_file)
+    
+    X = np.concatenate(all_data, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
+    
+    return X, labels, file_paths
+
+def load_mat_files_from_multiple_dirs(folder_paths):
+
+    all_X = []
+    all_labels = []
+    all_file_paths = []
+    
+    for folder_path in folder_paths:
+        X_sub, labels_sub, file_paths_sub = load_mat_files(folder_path)
+        all_X.append(X_sub)
+        all_labels.append(labels_sub)
+        all_file_paths.extend(file_paths_sub)
+    
+    X = np.concatenate(all_X, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
+    
+    return X, labels, all_file_paths
+
+def run_fold(test_idx, base_path, available_folders):
+
+    train_idx = [folder for folder in available_folders if folder != test_idx]
+    train_folders = [os.path.join(base_path, folder) for folder in train_idx]
+    test_folder = os.path.join(base_path, test_idx)
+    
+    print("==========")
+    print("current fold: test folder is:", test_folder)
+    
+
+    print("[INFO] load train data...")
+    X_train, y_train, _ = load_mat_files_from_multiple_dirs(train_folders)
+    print("  train sample number:", len(X_train))
+    print("  sample dimention:", X_train[0].shape)
+
+    print("[INFO] load test data...")
+    X_test, y_test, _ = load_mat_files(test_folder)
+    print("  test sample number:", len(X_test))
+    print("  sample dimention:", X_test[0].shape)
+
+    print("[INFO] train LDA...")
+    clf = LinearDiscriminantAnalysis()
+    clf.fit(X_train, y_train)
+
+    print("[INFO] test data predict...")
+    y_pred = clf.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    
+    print("test acc:", accuracy)
+    print("=======\n")
+    return accuracy
+
+def main():
+    base_path = r'../all_2'
+
+    available_folders = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10']
+    fold_results = {}
+    
+    for test_idx in available_folders:
+        accuracy = run_fold(test_idx, base_path, available_folders)
+        fold_results[test_idx] = accuracy
+    
+    print("All fold results:")
+    for folder, acc in fold_results.items():
+        print("test folder {}: acc = {}".format(folder, acc))
+
+if __name__ == "__main__":
+    main()
