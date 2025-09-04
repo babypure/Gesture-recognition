@@ -1,0 +1,76 @@
+
+import os
+import glob
+import numpy as np
+import scipy.io as sio
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
+
+def load_mat_files(folder_path):
+    file_paths = sorted(glob.glob(os.path.join(folder_path, '*.mat')))
+    all_data = []
+    all_labels = []
+    
+    for fp in file_paths:
+        data_dict = sio.loadmat(fp)
+        data_3d = data_dict['signal']
+        data_3d = np.transpose(data_3d, (2, 0, 1))  
+        n_frames = data_3d.shape[0]
+        data_2d = data_3d.reshape(n_frames, -1)  
+
+        base_name = os.path.basename(fp)
+        file_label = os.path.splitext(base_name)[0]  
+        labels_for_this_file = np.array([file_label] * n_frames)  
+
+        all_data.append(data_2d)
+        all_labels.append(labels_for_this_file)
+    
+    X = np.concatenate(all_data, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
+    
+    return X, labels, file_paths
+
+def load_mat_files_from_multiple_dirs(folder_paths):
+    all_X = []
+    all_labels = []
+    
+    for folder_path in folder_paths:
+        X_sub, labels_sub, _ = load_mat_files(folder_path)
+        all_X.append(X_sub)
+        all_labels.append(labels_sub)
+
+    X = np.concatenate(all_X, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
+    
+    return X, labels
+
+def main():
+    base_dir = r'../'
+    all_folders = sorted([os.path.join(base_dir, d) for d in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, d))])
+    
+    results = []
+    
+    for test_folder in all_folders:
+        train_folders = [folder for folder in all_folders if folder != test_folder]
+
+        print(f"[warn] Using {test_folder} as test set, remaining as train set.")
+        
+        X_train, y_train = load_mat_files_from_multiple_dirs(train_folders)
+        X_test, y_test, _ = load_mat_files(test_folder)
+
+        clf = SVC(kernel='rbf', C=1.0, gamma='scale', random_state=42)
+        clf.fit(X_train, y_train)
+
+        y_pred = clf.predict(X_test)
+        accuracy = accuracy_score(y_test, y_pred)
+
+        print(f"Test Folder: {os.path.basename(test_folder)}, Accuracy: {accuracy:.4f}")
+        
+        results.append((test_folder, accuracy))
+    
+    print("\nFinal Results")
+    for test_folder, acc in results:
+        print(f"Test Folder: {os.path.basename(test_folder)}, Accuracy: {acc:.4f}")
+
+if __name__ == "__main__":
+    main()
