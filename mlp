@@ -1,0 +1,94 @@
+
+import os
+import glob
+import numpy as np
+import scipy.io as sio
+from sklearn.neural_network import MLPClassifier
+from sklearn.metrics import accuracy_score
+import random  # For optional shuffling
+
+def load_single_mat_file(fp):
+    data_dict = sio.loadmat(fp)
+    data_3d = data_dict['signal']
+    # Transpose so that the first dimension is the frame index,
+    # and cast to float32 to save memory
+    data_3d = np.transpose(data_3d, (2, 0, 1)).astype(np.float32)
+    n_frames = data_3d.shape[0]
+    # Flatten each frame into a vector
+    data_2d = data_3d.reshape(n_frames, -1)
+    base_name = os.path.basename(fp)
+    file_label = os.path.splitext(base_name)[0]
+    labels_for_this_file = np.array([file_label] * n_frames)
+    return data_2d, labels_for_this_file
+
+def incremental_training(train_folders, n_epochs=5):
+    clf = MLPClassifier(hidden_layer_sizes=(150,),
+                        activation='relu',
+                        solver='adam',
+                        learning_rate_init=0.0001,
+                        max_iter=1,
+                        random_state=42)
+    
+    train_file_paths = []
+    all_classes = set()
+    for folder in train_folders:
+        fps = sorted(glob.glob(os.path.join(folder, '*.mat')))
+        train_file_paths.extend(fps)
+        for fp in fps:
+            label = os.path.splitext(os.path.basename(fp))[0]
+            all_classes.add(label)
+    classes = sorted(list(all_classes))
+    print("Identified classes:", classes)   
+    
+    first_fit = True
+    for epoch in range(n_epochs):
+        print(f"Epoch {epoch+1}")
+        # Optional: shuffle training files each epoch to avoid order bias
+        random.shuffle(train_file_paths)
+        for fp in train_file_paths:
+            X_batch, y_batch = load_single_mat_file(fp)
+            if first_fit:
+                clf.partial_fit(X_batch, y_batch, classes=classes)
+                first_fit = False
+            else:
+                clf.partial_fit(X_batch, y_batch)
+    return clf
+
+def load_mat_files(folder_path):
+    file_paths = sorted(glob.glob(os.path.join(folder_path, '*.mat')))
+    all_data = []
+    all_labels = []
+    for fp in file_paths:
+        X, y = load_single_mat_file(fp)
+        all_data.append(X)
+        all_labels.append(y)
+    X = np.concatenate(all_data, axis=0)
+    labels = np.concatenate(all_labels, axis=0)
+    return X, labels
+
+def run_experiment_incremental(train_folders, test_folder, n_epochs=10):
+    print("==========")
+    print("Train folders:", train_folders)
+    print("Test folder:", test_folder)   
+    clf = incremental_training(train_folders, n_epochs=n_epochs)
+    
+    # Load test data (and convert to float32 for consistency)
+    X_test, y_test = load_mat_files(test_folder)
+    X_test = X_test.astype(np.float32)
+
+    y_pred = clf.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print("Test accuracy:", accuracy)
+    print("==========\n")
+    return accuracy
+
+def main():
+    base_path = r'../'
+    train_folders = [os.path.join(base_path, folder) for folder in ['01', '02', '03', '04', '05', '06', '07', '08', '09']]
+    test_folder = os.path.join(base_path, '10')
+    
+    accuracy = run_experiment_incremental(train_folders, test_folder, n_epochs=5)
+    print("Final Test Accuracy:", accuracy)
+
+if __name__ == "__main__":
+    main()
